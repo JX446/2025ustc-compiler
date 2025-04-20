@@ -386,9 +386,7 @@ Value* ASTIterationStmt::accept(ASTVisitor &visitor) { return visitor.visit(*thi
 Value* ASTReturnStmt::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
 Value* ASTAssignExpression::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
 Value* ASTSimpleExpression::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
-Value* ASTAdditiveExpression::accept(ASTVisitor &visitor) {
-    return visitor.visit(*this);
-}
+Value* ASTAdditiveExpression::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
 Value* ASTVar::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
 Value* ASTTerm::accept(ASTVisitor &visitor) { return visitor.visit(*this); }
 Value* ASTCall::accept(ASTVisitor &visitor) { return visitor.visit(*this); }

@@ -1,4 +1,6 @@
 #include "cminusf_builder.hpp"
+#include "Type.hpp"
+#include "Value.hpp"
 
 #define CONST_FP(num) ConstantFP::get((float)num, module.get())
 #define CONST_INT(num) ConstantInt::get(num, module.get())
@@ -10,22 +12,6 @@ Type *INT32_T;
 Type *INT32PTR_T;
 Type *FLOAT_T;
 Type *FLOATPTR_T;
-
-bool promote(IRBuilder *builder, Value **l_val_p, Value **r_val_p) {
-    bool is_int = false;
-    auto &l_val = *l_val_p;
-    auto &r_val = *r_val_p;
-    if (l_val->get_type() == r_val->get_type()) {
-        is_int = l_val->get_type()->is_integer_type();
-    } else {
-        if (l_val->get_type()->is_integer_type()) {
-            l_val = builder->create_sitofp(l_val, FLOAT_T);
-        } else {
-            r_val = builder->create_sitofp(r_val, FLOAT_T);
-        }
-    }
-    return is_int;
-}
 
 /*
  * use CMinusfBuilder::Scope to construct scopes
@@ -52,14 +38,37 @@ Value* CminusfBuilder::visit(ASTProgram &node) {
 
 Value* CminusfBuilder::visit(ASTNum &node) {
     if (node.type == TYPE_INT) {
-        return CONST_INT(node.i_val);
+        context.ValBridge = CONST_INT(node.i_val);
+    } 
+    else if (node.type == TYPE_FLOAT) {
+        context.ValBridge = CONST_FP(node.f_val);
+    } 
+    else {
+        std::cerr << "Unsupported type in ASTNum" << std::endl;
     }
-    return CONST_FP(node.f_val);
+    return nullptr;    
 }
 
+
 Value* CminusfBuilder::visit(ASTVarDeclaration &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    auto varTy = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+    if (node.num != nullptr)  
+        varTy = ArrayType::get(varTy, node.num->i_val);
+    if (scope.in_global()) {
+        auto initializer = ConstantZero::get(varTy, module.get());
+        auto gvar = GlobalVariable::create(
+            node.id,
+            module.get(),
+            varTy,
+            false,
+            initializer);
+        scope.push(node.id, gvar);
+    }
+    else {
+        auto var = builder->create_alloca(varTy);
+        scope.push(node.id, var);
+    }
+    
     return nullptr;
 }
 
@@ -74,20 +83,15 @@ Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
     else
         ret_type = VOID_T;
 
+    auto paramTy = INT32_T;
     for (auto &param : node.params) {
-        if (param->type == TYPE_INT) {
-            if (param->isarray) {
-                param_types.push_back(INT32PTR_T);
-            } else {
-                param_types.push_back(INT32_T);
-            }
-        } else {
-            if (param->isarray) {
-                param_types.push_back(FLOATPTR_T);
-            } else {
-                param_types.push_back(FLOAT_T);
-            }
+        if (param->isarray) { 
+            paramTy = (param->type == TYPE_INT) ? INT32PTR_T : FLOATPTR_T;
         }
+        else {
+            paramTy = (param->type == TYPE_INT) ? INT32_T : FLOAT_T;
+        }
+        param_types.push_back(paramTy);
     }
 
     fun_type = FunctionType::get(ret_type, param_types);
@@ -97,21 +101,21 @@ Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
     auto funBB = BasicBlock::create(module.get(), "entry", func);
     builder->set_insert_point(funBB);
     scope.enter();
-    context.pre_enter_scope = true;
     std::vector<Value *> args;
     for (auto &arg : func->get_args()) {
         args.push_back(&arg);
     }
+    context.args = args;
     for (unsigned int i = 0; i < node.params.size(); ++i) {
-        // TODO: You need to deal with params and store them in the scope.
+        context.cirStep = i;
+        node.params[i]->accept(*this);
     }
     node.compound_stmt->accept(*this);
-    if (builder->get_insert_block()->get_terminator() == nullptr) 
-    {
+    if (not builder->get_insert_block()->is_terminated())  {
         if (context.func->get_return_type()->is_void_type())
             builder->create_void_ret();
         else if (context.func->get_return_type()->is_float_type())
-            builder->create_ret(CONST_FP(0.));
+            builder->create_ret(CONST_FP(0.0));
         else
             builder->create_ret(CONST_INT(0));
     }
@@ -120,201 +124,373 @@ Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
 }
 
 Value* CminusfBuilder::visit(ASTParam &node) {
+    Type *paramTy;
+    if (node.isarray) {
+        paramTy = (node.type == TYPE_INT) ? INT32PTR_T : FLOATPTR_T;
+    } 
+    else {
+        paramTy = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+    }
+    auto alloc = static_cast<Value*>(builder->create_alloca(paramTy));
+    builder->create_store(context.args[context.cirStep], alloc);
+    scope.push(node.id, alloc);
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTCompoundStmt &node) {
-    // TODO: This function is not complete.
-    // You may need to add some code here
-    // to deal with complex statements. 
-    
-    for (auto &decl : node.local_declarations) {
+
+    scope.enter();
+
+    for (auto& decl: node.local_declarations) {
         decl->accept(*this);
     }
 
-    for (auto &stmt : node.statement_list) {
+    for (auto& stmt: node.statement_list) {
         stmt->accept(*this);
-        if (builder->get_insert_block()->get_terminator() == nullptr)
+        if (builder->get_insert_block()->is_terminated())
             break;
     }
+
+    scope.exit();
+
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTExpressionStmt &node) {
-    if (node.expression != nullptr) {
-        return node.expression->accept(*this);
-    }
+    if (node.expression != nullptr)
+        node.expression->accept(*this);
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
-    auto *ret_val = node.expression->accept(*this);
-    auto *trueBB = BasicBlock::create(module.get(), "", context.func);
-    BasicBlock *falseBB{};
-    auto *contBB = BasicBlock::create(module.get(), "", context.func);
-    Value *cond_val = nullptr;
-    if (ret_val->get_type()->is_integer_type()) {
-        cond_val = builder->create_icmp_ne(ret_val, CONST_INT(0));
-    } else {
-        cond_val = builder->create_fcmp_ne(ret_val, CONST_FP(0.));
+    node.expression->accept(*this);
+    auto expression = context.ValBridge;
+
+    auto IFstmtBB = BasicBlock::create(module.get(), "", context.func);
+    BasicBlock *ELSEstmtBB; 
+    auto endBB = BasicBlock::create(module.get(), "", context.func);
+
+    auto intORfp = expression->get_type()->is_integer_type();
+    auto cond_val = (intORfp) ? static_cast<Value*>(builder->create_icmp_ne(expression, CONST_INT(0))) : static_cast<Value*>(builder->create_fcmp_ne(expression, CONST_FP(0.0)));
+
+    if (!node.else_statement) {
+        builder->create_cond_br(cond_val, IFstmtBB, endBB);
+    }
+    else {
+        ELSEstmtBB = BasicBlock::create(module.get(), "", context.func);
+        builder->create_cond_br(cond_val, IFstmtBB, ELSEstmtBB);
     }
 
-    if (node.else_statement == nullptr) {
-        builder->create_cond_br(cond_val, trueBB, contBB);
-    } else {
-        falseBB = BasicBlock::create(module.get(), "", context.func);
-        builder->create_cond_br(cond_val, trueBB, falseBB);
-    }
-    builder->set_insert_point(trueBB);
+    builder->set_insert_point(IFstmtBB);
     node.if_statement->accept(*this);
+    if (not builder->get_insert_block()->is_terminated())
+        builder->create_br(endBB);
 
-    if (not builder->get_insert_block()->is_terminated()) {
-        builder->create_br(contBB);
-    }
-
-    if (node.else_statement == nullptr) {
-        // falseBB->erase_from_parent(); // did not clean up memory
-    } else {
-        builder->set_insert_point(falseBB);
+    if (node.else_statement) {
+        builder->set_insert_point(ELSEstmtBB);
         node.else_statement->accept(*this);
-        if (not builder->get_insert_block()->is_terminated()) {
-            builder->create_br(contBB);
-        }
+        if (not builder->get_insert_block()->is_terminated())
+            builder->create_br(endBB);
     }
 
-    builder->set_insert_point(contBB);
+    builder->set_insert_point(endBB);
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTIterationStmt &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    auto expressionBB = BasicBlock::create(module.get(), "", context.func);
+
+    if (not builder->get_insert_block()->is_terminated())
+        builder->create_br(expressionBB);
+
+    builder->set_insert_point(expressionBB);
+
+    node.expression->accept(*this);
+    auto expression = context.ValBridge;
+
+    auto stmtBB = BasicBlock::create(module.get(), "", context.func);
+    auto endBB = BasicBlock::create(module.get(), "", context.func);
+
+    auto intORfp = expression->get_type()->is_integer_type();
+    auto cond_val = (intORfp) ? static_cast<Value*>(builder->create_icmp_ne(expression, CONST_INT(0))) : static_cast<Value*>(builder->create_fcmp_ne(expression, CONST_FP(0.0)));
+
+    builder->create_cond_br(cond_val, stmtBB, endBB);
+
+    builder->set_insert_point(stmtBB);
+    node.statement->accept(*this);
+    if (not builder->get_insert_block()->is_terminated())
+        builder->create_br(expressionBB);
+
+    builder->set_insert_point(endBB);
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTReturnStmt &node) {
     if (node.expression == nullptr) {
         builder->create_void_ret();
-    } else {
-        auto *fun_ret_type =
-            context.func->get_function_type()->get_return_type();
-        auto *ret_val = node.expression->accept(*this);
-        if (fun_ret_type != ret_val->get_type()) {
-            if (fun_ret_type->is_integer_type()) {
-                ret_val = builder->create_fptosi(ret_val, INT32_T);
-            } else {
-                ret_val = builder->create_sitofp(ret_val, FLOAT_T);
-            }
+    }
+    else {
+        node.expression->accept(*this);
+        
+        auto funTy = context.func->get_function_type()->get_return_type();
+        auto retTy = context.ValBridge->get_type();
+        if (funTy != retTy) {
+            if (funTy->is_integer_type())
+                context.ValBridge = builder->create_fptosi(context.ValBridge, INT32_T);
+            else
+                context.ValBridge = builder->create_sitofp(context.ValBridge, FLOAT_T);
         }
 
-        builder->create_ret(ret_val);
+        builder->create_ret(context.ValBridge);
     }
-
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTVar &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    auto var = scope.find(node.id);
+    auto intTy = var->get_type()->get_pointer_element_type()->is_integer_type();
+    auto floatTy = var->get_type()->get_pointer_element_type()->is_float_type();
+    auto ptrTy = var->get_type()->get_pointer_element_type()->is_pointer_type();
+
+    auto assign = (context.assign) ? !(context.assign=false) : false; 
+
+    if (node.expression == nullptr) {
+        if (assign) {  
+            context.ValBridge = var;
+        }
+        else {
+            if (intTy || floatTy || ptrTy) {
+                context.ValBridge = builder->create_load(var);
+            }
+            else {  
+                context.ValBridge = builder->create_gep(var, {CONST_INT(0), CONST_INT(0)});
+            }
+        }
+    }
+    else {
+        node.expression->accept(*this);
+        auto index = context.ValBridge;
+    
+        if (index->get_type()->is_float_type())
+            index = builder->create_fptosi(index, INT32_T);
+    
+        Value *idxCond = builder->create_icmp_ge(index, CONST_INT(0));
+    
+        auto normalBB = BasicBlock::create(module.get(), "", context.func);
+        auto illegalBB = BasicBlock::create(module.get(), "", context.func);
+        builder->create_cond_br(idxCond, normalBB, illegalBB);
+    
+        builder->set_insert_point(illegalBB);
+        auto neg_idx_except_fun = scope.find("neg_idx_except");  
+        builder->create_call(static_cast<Function *>(neg_idx_except_fun), {});
+
+        auto retTy = context.func->get_return_type();
+        if (retTy->is_void_type())
+            builder->create_void_ret();
+        else if (retTy->is_float_type())
+            builder->create_ret(CONST_FP(0.0)); 
+        else
+            builder->create_ret(CONST_INT(0));
+    
+        builder->set_insert_point(normalBB);
+        auto ptr = var;
+        auto idxs = {index};
+        if (ptrTy)
+            ptr = static_cast<Value*>(builder->create_load(var));
+        else if(!intTy && !floatTy)
+            idxs = {CONST_INT(0), index};
+        auto addr_ptr = static_cast<Value*>(builder->create_gep(ptr, idxs));
+        context.ValBridge = (assign) ? addr_ptr : builder->create_load(addr_ptr);
+    }
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTAssignExpression &node) {
-    auto *expr_result = node.expression->accept(*this);
-    context.require_lvalue = true;
-    auto *var_addr = node.var->accept(*this);
-    if (var_addr->get_type()->get_pointer_element_type() !=
-        expr_result->get_type()) {
-        if (expr_result->get_type() == INT32_T) {
-            expr_result = builder->create_sitofp(expr_result, FLOAT_T);
-        } else {
-            expr_result = builder->create_fptosi(expr_result, INT32_T);
-        }
+    context.assign = true;     
+    node.var->accept(*this);
+    auto var = context.ValBridge;
+
+    node.expression->accept(*this);
+
+    auto varTy = var->get_type()->get_pointer_element_type(); 
+    auto expressionTy = context.ValBridge->get_type();
+    if (varTy != expressionTy) {
+        if (expressionTy == INT32_T)
+            context.ValBridge = builder->create_sitofp(context.ValBridge, FLOAT_T);
+        else
+            context.ValBridge = builder->create_fptosi(context.ValBridge, INT32_T);
     }
-    builder->create_store(expr_result, var_addr);
-    return expr_result;
+    builder->create_store(context.ValBridge, var);
+    return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    if (node.additive_expression_r == nullptr) {
+        node.additive_expression_l->accept(*this);  
+    } 
+    else {
+        node.additive_expression_l->accept(*this);
+        auto l_val = context.ValBridge;
+        node.additive_expression_r->accept(*this);
+        auto r_val = context.ValBridge;
+    
+        auto lTy = l_val->get_type()->is_integer_type();
+        auto rTy = r_val->get_type()->is_integer_type();
+        auto intTy = lTy && rTy;
+
+        if (lTy != rTy) {
+            if (lTy) {
+                l_val = builder->create_sitofp(l_val, FLOAT_T);
+            } else {
+                r_val = builder->create_sitofp(r_val, FLOAT_T);
+            }
+        }
+
+        Value *cmp;
+        switch (node.op) {
+            case OP_LE:
+                if (intTy)
+                    cmp = builder->create_icmp_le(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_le(l_val, r_val);
+                break;        
+            case OP_LT:
+                if (intTy)
+                    cmp = builder->create_icmp_lt(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_lt(l_val, r_val);
+                break;
+            case OP_GT:
+                if (intTy)
+                    cmp = builder->create_icmp_gt(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_gt(l_val, r_val);
+                break;
+            case OP_GE:
+                if (intTy)
+                    cmp = builder->create_icmp_ge(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_ge(l_val, r_val);
+                break;
+            case OP_EQ:
+                if (intTy)
+                    cmp = builder->create_icmp_eq(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_eq(l_val, r_val);
+                break;
+            case OP_NEQ:
+                if (intTy)
+                    cmp = builder->create_icmp_ne(l_val, r_val);
+                else
+                    cmp = builder->create_fcmp_ne(l_val, r_val);
+                break;
+        }
+
+        context.ValBridge = builder->create_zext(cmp, INT32_T);
+    }
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTAdditiveExpression &node) {
     if (node.additive_expression == nullptr) {
-        return node.term->accept(*this);
+        node.term->accept(*this);    
     }
+    else {
+        node.additive_expression->accept(*this);    
+        auto l_val = context.ValBridge;
+        node.term->accept(*this);
+        auto r_val = context.ValBridge;
 
-    auto *l_val = node.additive_expression->accept(*this);
-    auto *r_val = node.term->accept(*this);
-    bool is_int = promote(&*builder, &l_val, &r_val);
-    Value *ret_val = nullptr;
-    switch (node.op) {
-    case OP_PLUS:
-        if (is_int) {
-            ret_val = builder->create_iadd(l_val, r_val);
-        } else {
-            ret_val = builder->create_fadd(l_val, r_val);
+        auto lTy = l_val->get_type()->is_integer_type();
+        auto rTy = r_val->get_type()->is_integer_type();
+        auto intTy = lTy && rTy;
+    
+        if (lTy != rTy) {
+            if (lTy) {
+                l_val = builder->create_sitofp(l_val, FLOAT_T);
+            } 
+            else {
+                r_val = builder->create_sitofp(r_val, FLOAT_T);
+            }
         }
-        break;
-    case OP_MINUS:
-        if (is_int) {
-            ret_val = builder->create_isub(l_val, r_val);
-        } else {
-            ret_val = builder->create_fsub(l_val, r_val);
+
+        switch (node.op) {
+            case OP_PLUS:
+                if (intTy)
+                    context.ValBridge = builder->create_iadd(l_val, r_val);
+                else
+                    context.ValBridge = builder->create_fadd(l_val, r_val);
+                break;
+            case OP_MINUS:
+                if (intTy)
+                    context.ValBridge = builder->create_isub(l_val, r_val);
+                else
+                    context.ValBridge = builder->create_fsub(l_val, r_val);
+                break;
         }
-        break;
     }
-    return ret_val;
+    return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTTerm &node) {
     if (node.term == nullptr) {
-        return node.factor->accept(*this);
+        node.factor->accept(*this);
     }
+    else {
+        node.term->accept(*this);
+        auto l_val = context.ValBridge;
+        node.factor->accept(*this);
+        auto r_val = context.ValBridge;
 
-    auto *l_val = node.term->accept(*this);
-    auto *r_val = node.factor->accept(*this);
-    bool is_int = promote(&*builder, &l_val, &r_val);
+        auto lTy = l_val->get_type()->is_integer_type();
+        auto rTy = r_val->get_type()->is_integer_type();
+        auto intTy = lTy && rTy;
+    
+        if (lTy != rTy) {
+            if (lTy) {
+                l_val = builder->create_sitofp(l_val, FLOAT_T);
+            }
+            else {
+                r_val = builder->create_sitofp(r_val, FLOAT_T);
+            }
+        }
 
-    Value *ret_val = nullptr;
-    switch (node.op) {
-    case OP_MUL:
-        if (is_int) {
-            ret_val = builder->create_imul(l_val, r_val);
-        } else {
-            ret_val = builder->create_fmul(l_val, r_val);
+        switch (node.op) {
+            case OP_MUL:
+                if (intTy)
+                    context.ValBridge = builder->create_imul(l_val, r_val);
+                else
+                    context.ValBridge = builder->create_fmul(l_val, r_val);
+                break;
+            case OP_DIV:
+                if (intTy)
+                    context.ValBridge = builder->create_isdiv(l_val, r_val);
+                else
+                    context.ValBridge = builder->create_fdiv(l_val, r_val);
+                break;
         }
-        break;
-    case OP_DIV:
-        if (is_int) {
-            ret_val = builder->create_isdiv(l_val, r_val);
-        } else {
-            ret_val = builder->create_fdiv(l_val, r_val);
-        }
-        break;
     }
-    return ret_val;
+    return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTCall &node) {
-    auto *func = dynamic_cast<Function *>(scope.find(node.id));
+    auto func = static_cast<Function *>(scope.find(node.id));
+    auto paramTy = func->get_function_type()->param_begin();  
+
     std::vector<Value *> args;
-    auto param_type = func->get_function_type()->param_begin();
     for (auto &arg : node.args) {
-        auto *arg_val = arg->accept(*this);
-        if (!arg_val->get_type()->is_pointer_type() &&
-            *param_type != arg_val->get_type()) {
-            if (arg_val->get_type()->is_integer_type()) {
-                arg_val = builder->create_sitofp(arg_val, FLOAT_T);
-            } else {
-                arg_val = builder->create_fptosi(arg_val, INT32_T);
-            }
+        arg->accept(*this);
+        auto argTy = context.ValBridge->get_type();
+        if (argTy != *paramTy) {
+            if (argTy->is_integer_type())
+                context.ValBridge = builder->create_sitofp(context.ValBridge, FLOAT_T);
+            else
+                context.ValBridge = builder->create_fptosi(context.ValBridge, INT32_T);
         }
-        args.push_back(arg_val);
-        param_type++;
+        args.push_back(context.ValBridge);
+        paramTy++;
     }
 
-    return builder->create_call(static_cast<Function *>(func), args);
+    context.ValBridge = builder->create_call(func, args);
+    return nullptr;
 }
