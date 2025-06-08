@@ -22,6 +22,7 @@ Type *FLOATPTR_T;
  */
 
 Value *CminusfBuilder::visit(ASTProgram &node) {
+Value *CminusfBuilder::visit(ASTProgram &node) {
     VOID_T = module->get_void_type();
     INT1_T = module->get_int1_type();
     INT32_T = module->get_int32_type();
@@ -37,6 +38,7 @@ Value *CminusfBuilder::visit(ASTProgram &node) {
     return ret_val;
 }
 
+Value *CminusfBuilder::visit(ASTNum &node) {
 Value *CminusfBuilder::visit(ASTNum &node) {
     if (node.type == TYPE_INT) {
         context.ValBridge = CONST_INT(node.i_val);
@@ -71,11 +73,11 @@ Value *CminusfBuilder::visit(ASTFunDeclaration &node) {
     FunctionType *fun_type;
     Type *ret_type;
     std::vector<Type *> param_types;
-    if (node.type == TYPE_INT)
+    if (node.type == TYPE_INT) {
         ret_type = INT32_T;
-    else if (node.type == TYPE_FLOAT)
+    } else if (node.type == TYPE_FLOAT) {
         ret_type = FLOAT_T;
-    else
+    } else {
         ret_type = VOID_T;
     auto paramTy = INT32_T;
     for (auto &param : node.params) {
@@ -88,10 +90,10 @@ Value *CminusfBuilder::visit(ASTFunDeclaration &node) {
     }
 
     fun_type = FunctionType::get(ret_type, param_types);
-    auto func = Function::create(fun_type, node.id, module.get());
+    auto *func = Function::create(fun_type, node.id, module.get());
     scope.push(node.id, func);
     context.func = func;
-    auto funBB = BasicBlock::create(module.get(), "entry", func);
+    auto *funBB = BasicBlock::create(module.get(), "entry", func);
     builder->set_insert_point(funBB);
     scope.enter();
     std::vector<Value *> args;
@@ -111,6 +113,7 @@ Value *CminusfBuilder::visit(ASTFunDeclaration &node) {
             builder->create_ret(CONST_FP(0.0));
         else
             builder->create_ret(CONST_INT(0));
+        }
     }
     scope.exit();
     return nullptr;
@@ -221,6 +224,7 @@ Value *CminusfBuilder::visit(ASTIterationStmt &node) {
     return nullptr;
 }
 
+Value *CminusfBuilder::visit(ASTReturnStmt &node) {
 Value *CminusfBuilder::visit(ASTReturnStmt &node) {
     if (node.expression == nullptr) {
         builder->create_void_ret();
@@ -387,6 +391,7 @@ Value *CminusfBuilder::visit(ASTSimpleExpression &node) {
 }
 
 Value *CminusfBuilder::visit(ASTAdditiveExpression &node) {
+Value *CminusfBuilder::visit(ASTAdditiveExpression &node) {
     if (node.additive_expression == nullptr) {
         node.term->accept(*this);
     } else {
@@ -425,6 +430,7 @@ Value *CminusfBuilder::visit(ASTAdditiveExpression &node) {
     return nullptr;
 }
 
+Value *CminusfBuilder::visit(ASTTerm &node) {
 Value *CminusfBuilder::visit(ASTTerm &node) {
     if (node.term == nullptr) {
         node.factor->accept(*this);
