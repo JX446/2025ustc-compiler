@@ -103,7 +103,7 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
     }
     for (auto bb : bb_list) {
         for (auto &inst : bb->get_instructions()) {
-            for (int i = 0; i < inst.get_num_operand(); i++) {
+            for (unsigned int i = 0; i < inst.get_num_operand(); i++) {
                 if (inst.is_phi()) {
                     ;
                 }
@@ -140,7 +140,7 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
                 // ret_bb->add_instruction(br);
             }
             auto phi = PhiInst::create_phi(origin->get_return_type(), bb_phi);
-            for(int i = 0; i < ret_list.size(); i++){
+            for(long unsigned int i = 0; i < ret_list.size(); i++){
                 phi->add_phi_pair_operand(ret_list[i]->get_operand(0), ret_bb_list[i]);
             }
             bb_phi->add_instruction(phi);

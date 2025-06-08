@@ -239,7 +239,7 @@ void ConstPropagation::run() {
                     for(auto &inst1 : succ_bb->get_instructions()){
                         auto inst = &inst1;
                         if(inst->is_phi()){
-                            for(int i = 1; i < inst->get_num_operand(); i += 2)
+                            for(unsigned int i = 1; i < inst->get_num_operand(); i += 2)
                                 if(inst->get_operand(i) == &bb) {
                                     inst->remove_operand(i - 1);
                                     inst->remove_operand(i - 1);
@@ -287,7 +287,7 @@ void ConstPropagation::clear_blocks_recs(BasicBlock *start_bb) {
                     if (instr->is_phi()) {
                         LOG(DEBUG) << "Find a PHI instruction in the sucess node of "
                                       "useless branch";
-                        for (int i = 1; i < instr->get_num_operand(); i += 2) {
+                        for (unsigned int i = 1; i < instr->get_num_operand(); i += 2) {
                             if (instr->get_operand(i) == start_bb &&
                                 start_bb->get_pre_basic_blocks().size() <= 0) {
                                 LOG(DEBUG) << "remove unuseful phi branch in the index of " << i - 1
