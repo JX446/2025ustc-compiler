@@ -30,6 +30,7 @@ Value *CminusfBuilder::visit(ASTProgram &node) {
     FLOATPTR_T = module->get_float_ptr_type();
 
     Value *ret_val = nullptr;
+    // 对AST进行遍历
     for (auto &decl : node.declarations) {
         ret_val = decl->accept(*this);
     }
@@ -47,10 +48,13 @@ Value *CminusfBuilder::visit(ASTNum &node) {
     return nullptr;
 }
 
+// 变量声明 比如：int a / float b[10]
 Value *CminusfBuilder::visit(ASTVarDeclaration &node) {
     auto varTy = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+    // 如果是数组
     if (node.num != nullptr)
         varTy = ArrayType::get(varTy, node.num->i_val);
+    // 如果是全局变量
     if (scope.in_global()) {
         auto initializer = ConstantZero::get(varTy, module.get());
         auto gvar = GlobalVariable::create(node.id, module.get(), varTy, false,
