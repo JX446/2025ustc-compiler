@@ -35,10 +35,12 @@ bool DeadCode::clear_basic_blocks(Function *func) {
     return changed;
 }
 
+// 标记阶段：递归标记所有有用的指令
 void DeadCode::mark(Function *func) {
     work_list.clear();
     marked.clear();
 
+    // 首先将所有关键指令（如有副作用的指令、控制流指令等）加入 work_list 并标记
     for (auto &bb : func->get_basic_blocks()) {
         for (auto &ins : bb.get_instructions()) {
             if (is_critical(&ins)) {
@@ -48,6 +50,7 @@ void DeadCode::mark(Function *func) {
         }
     }
 
+    // 递归标记所有对关键指令有影响的指令
     while (work_list.empty() == false) {
         auto now = work_list.front();
         work_list.pop_front();
@@ -56,41 +59,46 @@ void DeadCode::mark(Function *func) {
     }
 }
 
+// 标记单条指令的所有依赖（操作数）为有用
 void DeadCode::mark(Instruction *ins) {
     for (auto op : ins->get_operands()) {
         auto def = dynamic_cast<Instruction *>(op);
         if (def == nullptr)
-            continue;
+            continue; // 不是指令定义，跳过
         if (marked[def])
-            continue;
+            continue; // 已经标记过，跳过
         if (def->get_function() != ins->get_function())
-            continue;
+            continue; // 不属于同一个函数，跳过
         marked[def] = true;
-        work_list.push_back(def);
+        work_list.push_back(def); // 加入队列，递归处理
     }
 }
 
+// 清扫阶段：删除未被标记为有用的指令
 bool DeadCode::sweep(Function *func) {
     std::unordered_set<Instruction *> wait_del{};
+    // 收集所有未被标记的指令
     for (auto &bb : func->get_basic_blocks()) {
         for (auto it = bb.get_instructions().begin();
              it != bb.get_instructions().end();) {
             if (marked[&*it]) {
-                ++it;
+                ++it; // 有用指令，跳过
                 continue;
             } else {
                 auto tmp = &*it;
-                wait_del.insert(tmp);
+                wait_del.insert(tmp); // 无用指令，加入待删除集合
                 it++;
             }
         }
     }
+    // 先移除所有操作数，断开依赖
     for (auto inst : wait_del)
         inst->remove_all_operands();
+    // 从基本块中删除指令
     for (auto inst : wait_del)
         inst->get_parent()->get_instructions().erase(inst);
     ins_count += wait_del.size();
-    return not wait_del.empty(); // changed
+    return not wait_del.empty(); // 若有删除则返回 true
 }
 
 bool DeadCode::is_critical(Instruction *ins) {
